@@ -42,6 +42,7 @@ Usage:
   am sessions [options]
   am sessions <dir> [options]
   am search <keyword> [options]
+  am remote --telegram <token>
 
 Options (sessions):
   --provider <name>   Filter providers (repeatable). One of: codex, claude, cursor, gemini, antigravity
@@ -65,7 +66,10 @@ Options (search):
   --project <substr>  Additional substring filter on project/cwd/title/id
   --tui / --no-tui    Same selector behavior as ` + "`" + `sessions <dir>` + "`" + `
   --json              Output JSON (includes a short snippet around the first hit)
-  --debug             Print debug info to stderr`
+  --debug             Print debug info to stderr
+
+Options (remote):
+  --telegram <token>  Run Codex app-server over stdio and bridge messages through a Telegram bot`
 
 func usage() string {
 	return usageStr
