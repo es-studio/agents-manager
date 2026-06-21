@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -3097,7 +3098,7 @@ func (s *remoteOutputState) handleEvent(sender telegramSender, event remoteRespo
 	case "turn_completed":
 		_, err := s.sendDraft(sender, true)
 		return err
-	case "status", "error":
+	case "status", "error", "tool":
 		for _, chunk := range splitTelegramText(event.text, 4096) {
 			if err := sender.sendMessage(s.chatID, chunk); err != nil {
 				return err
@@ -3107,15 +3108,288 @@ func (s *remoteOutputState) handleEvent(sender telegramSender, event remoteRespo
 	return nil
 }
 
+func augmentedAgyPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/home/agent"
+	}
+	base := os.Getenv("PATH")
+	if base == "" {
+		base = "/usr/local/bin:/usr/bin:/bin"
+	}
+	return fmt.Sprintf("%s/bin:%s/.local/bin:%s/.local/share/fnm/aliases/default/bin:%s", home, home, home, base)
+}
+
+func agyTranscriptPath(convID string) string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl")
+}
+
+func agyConversationIDFromTranscriptPath(path string) string {
+	return filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
+}
+
+func extractAgyUserRequest(content string) string {
+	start := strings.Index(content, "<USER_REQUEST>")
+	end := strings.Index(content, "</USER_REQUEST>")
+	if start < 0 || end < 0 || end < start {
+		return strings.TrimSpace(content)
+	}
+	start += len("<USER_REQUEST>")
+	return strings.TrimSpace(content[start:end])
+}
+
+func transcriptMatchesPrompt(path string, prompt string) bool {
+	if prompt == "" {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var step map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &step); err != nil {
+			continue
+		}
+		source, _ := step["source"].(string)
+		typ, _ := step["type"].(string)
+		content, _ := step["content"].(string)
+		if source == "USER_EXPLICIT" && typ == "USER_INPUT" && extractAgyUserRequest(content) == prompt {
+			return true
+		}
+	}
+	return false
+}
+
+func isAgyNarration(text string) bool {
+	lines := strings.Split(text, "\n")
+	found := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		found = true
+		if !strings.HasPrefix(trimmed, "I will") {
+			return false
+		}
+	}
+	return found
+}
+
+func getNewAgyConversationIDFromTranscripts(startedAt time.Time, beforeID string, prompt string) string {
+	homeDir, _ := os.UserHomeDir()
+	pattern := filepath.Join(homeDir, ".gemini", "antigravity-cli", "brain", "*", ".system_generated", "logs", "transcript.jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return ""
+	}
+
+	var bestPath string
+	var bestTime time.Time
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(startedAt.Add(-1 * time.Second)) {
+			continue
+		}
+		convID := agyConversationIDFromTranscriptPath(path)
+		if convID == beforeID {
+			continue
+		}
+		if !transcriptMatchesPrompt(path, prompt) {
+			continue
+		}
+		if bestPath == "" || info.ModTime().After(bestTime) {
+			bestPath = path
+			bestTime = info.ModTime()
+		}
+	}
+	if bestPath == "" {
+		return ""
+	}
+	return agyConversationIDFromTranscriptPath(bestPath)
+}
+
+func latestAgyStepIndex(path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+
+	var latest int64 = -1
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var step map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &step); err != nil {
+			continue
+		}
+		idxVal, ok := step["step_index"].(float64)
+		if !ok {
+			continue
+		}
+		idx := int64(idxVal)
+		if idx > latest {
+			latest = idx
+		}
+	}
+	return latest
+}
+
+func readNewSteps(path string, lastSentStep *int64, responseChan chan<- remoteResponseEvent) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var step map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &step); err == nil {
+			idxVal, ok := step["step_index"].(float64)
+			if !ok {
+				continue
+			}
+			idx := int64(idxVal)
+			if idx > *lastSentStep {
+				*lastSentStep = idx
+				source, _ := step["source"].(string)
+				typ, _ := step["type"].(string)
+				content, _ := step["content"].(string)
+
+				if source == "MODEL" {
+					if typ == "PLANNER_RESPONSE" {
+						var toolCallsMsg string
+						if tCalls, ok := step["tool_calls"].([]interface{}); ok && len(tCalls) > 0 {
+							for _, tcAny := range tCalls {
+								if tc, ok := tcAny.(map[string]interface{}); ok {
+									name, _ := tc["name"].(string)
+									toolCallsMsg += fmt.Sprintf("\n*[Tool Call]* `%s`\n", name)
+								}
+							}
+						}
+						if toolCallsMsg != "" {
+							responseChan <- remoteResponseEvent{kind: "tool", text: strings.TrimSpace(toolCallsMsg)}
+						}
+						msg := ""
+						if !isAgyNarration(content) {
+							msg = content
+						}
+						if msg != "" {
+							responseChan <- remoteResponseEvent{kind: "delta", text: msg}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func pollAgyTranscript(convID string, lastSentStep *int64, responseChan chan<- remoteResponseEvent, doneChan <-chan struct{}) {
+	transcriptPath := agyTranscriptPath(convID)
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-doneChan:
+			readNewSteps(transcriptPath, lastSentStep, responseChan)
+			return
+		case <-ticker.C:
+			readNewSteps(transcriptPath, lastSentStep, responseChan)
+		}
+	}
+}
+
+const agyBootstrapPrompt = "Internal remote bridge initialization. This is not a human user request and must not be counted as a previous user question. Start a reusable conversation session and reply with exactly READY."
+
+func createAgySession(timeout time.Duration) (string, int64, error) {
+	startedAt := time.Now()
+	cmd := exec.Command("agy", "--print", agyBootstrapPrompt)
+	cmd.Env = append(os.Environ(), "PATH="+augmentedAgyPath())
+	if err := cmd.Start(); err != nil {
+		return "", -1, err
+	}
+
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- cmd.Wait()
+	}()
+
+	var convID string
+	var cmdErr error
+	cmdFinished := false
+	ticker := time.NewTicker(100 * time.Millisecond)
+	timer := time.NewTimer(timeout)
+	defer ticker.Stop()
+	defer timer.Stop()
+
+waitForConversation:
+	for {
+		select {
+		case <-ticker.C:
+			convID = getNewAgyConversationIDFromTranscripts(startedAt, "", agyBootstrapPrompt)
+			if convID != "" {
+				break waitForConversation
+			}
+		case cmdErr = <-cmdDone:
+			cmdFinished = true
+			convID = getNewAgyConversationIDFromTranscripts(startedAt, "", agyBootstrapPrompt)
+			if convID != "" {
+				break waitForConversation
+			}
+			if cmdErr != nil {
+				return "", -1, fmt.Errorf("agy bootstrap exited before transcript was found: %w", cmdErr)
+			}
+			return "", -1, fmt.Errorf("agy bootstrap exited before transcript was found")
+		case <-timer.C:
+			_ = cmd.Process.Kill()
+			<-cmdDone
+			return "", -1, fmt.Errorf("timed out waiting for agy bootstrap transcript")
+		}
+	}
+
+	if !cmdFinished {
+		cmdErr = <-cmdDone
+	}
+	if cmdErr != nil {
+		return "", -1, cmdErr
+	}
+
+	return convID, latestAgyStepIndex(agyTranscriptPath(convID)), nil
+}
+
 func remoteCommand(token string) {
-	fmt.Println("Starting am remote with Telegram integration (Codex app-server mode)...")
-	fmt.Println("Please send a message '/start' to your telegram bot.")
+	fmt.Println("Starting am remote with Telegram integration...")
+	fmt.Println("Please send a message '/start codex' or '/start agy' to your telegram bot.")
 
 	tg := newTelegramClient(token)
 	var chatID int64
 	offset := 0
+	var mode string // "codex" or "agy"
 
-	// 1. Get Chat ID (auth)
+	// 1. Get Chat ID (auth) and Mode selection
 	for chatID == 0 {
 		out, err := tg.fetchUpdates(offset, 10)
 		if err != nil {
@@ -3136,38 +3410,28 @@ func remoteCommand(token string) {
 			if up.Message != nil && strings.HasPrefix(up.Message.Text, "/start") {
 				chatID = up.Message.Chat.ID
 				fmt.Printf("Authenticated chat ID: %d\n", chatID)
-				_ = tg.sendMessage(chatID, "Authenticated! Launching codex app-server...")
+				txt := strings.TrimSpace(up.Message.Text)
+				if strings.Contains(txt, "agy") {
+					mode = "agy"
+					_ = tg.sendMessage(chatID, "Authenticated! Launching agy CLI remote...")
+				} else {
+					mode = "codex"
+					_ = tg.sendMessage(chatID, "Authenticated! Launching codex app-server...")
+				}
 				break
 			}
 		}
 		time.Sleep(1 * time.Second)
 	}
 
-	// 2. Start codex app-server process in stdio mode
-	appServerCmd := exec.Command("codex", "app-server", "--stdio")
-	stdin, err := appServerCmd.StdinPipe()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get stdin pipe: %v\n", err)
-		os.Exit(1)
-	}
-	stdout, err := appServerCmd.StdoutPipe()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get stdout pipe: %v\n", err)
-		os.Exit(1)
-	}
+	var appServerCmd *exec.Cmd
+	var stdin io.WriteCloser
+	var stdout io.ReadCloser
+	var activeThreadID string
+	var nextRequestID = 2
+	var responseChan = make(chan remoteResponseEvent, 100)
 
-	if err := appServerCmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start codex app-server: %v\n", err)
-		_ = tg.sendMessage(chatID, "Error: Failed to launch codex app-server. Make sure codex CLI is installed.")
-		os.Exit(1)
-	}
-
-	defer func() {
-		_ = appServerCmd.Process.Kill()
-	}()
-
-	// Write and read JSON-RPC lines
-	writeJSONRPC := func(method string, id interface{}, params interface{}) {
+	writeJSONRPCForCodex := func(w io.Writer, method string, id interface{}, params interface{}) {
 		msg := map[string]interface{}{
 			"method": method,
 			"params": params,
@@ -3177,88 +3441,124 @@ func remoteCommand(token string) {
 		}
 		data, _ := json.Marshal(msg)
 		fmt.Printf(">> Write app-server: %s\n", string(data))
-		_, _ = stdin.Write(append(data, '\n'))
+		_, _ = w.Write(append(data, '\n'))
 	}
 
-	// Channel to receive app-server response events to forward to Telegram.
-	responseChan := make(chan remoteResponseEvent, 100)
-	// Active thread and turn states
-	var activeThreadID string
-	nextRequestID := 2
-
-	// Goroutine to read stdout from app-server
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Printf("<< Read app-server: %s\n", line)
-
-			var raw map[string]interface{}
-			if err := json.Unmarshal([]byte(line), &raw); err != nil {
-				continue
-			}
-
-			// Handle responses and notifications
-			method, _ := raw["method"].(string)
-			if method == "" {
-				// This is a response.
-				idVal, ok := raw["id"].(float64)
-				if ok {
-					if idVal == 0 { // Response to 'initialize'
-						// 1. Send initialized notification (client -> server)
-						writeJSONRPC("initialized", nil, map[string]interface{}{})
-						// 2. Start thread immediately
-						writeJSONRPC("thread/start", 1, map[string]interface{}{})
-					} else if idVal == 1 { // Response to 'thread/start'
-						if result, exists := raw["result"].(map[string]interface{}); exists {
-							if thread, exists := result["thread"].(map[string]interface{}); exists {
-								activeThreadID, _ = thread["id"].(string)
-								fmt.Printf("Codex active thread: %s\n", activeThreadID)
-								responseChan <- remoteResponseEvent{kind: "status", text: fmt.Sprintf("Codex thread started! (ID: %s)", activeThreadID)}
-							}
-						}
-					}
-				}
-			} else {
-				// This is a notification
-				switch method {
-				case "item/agentMessage/delta":
-					if params, exists := raw["params"].(map[string]interface{}); exists {
-						if delta, exists := params["delta"].(string); exists {
-							responseChan <- remoteResponseEvent{kind: "delta", text: delta}
-						}
-					}
-				case "item/completed":
-					if params, exists := raw["params"].(map[string]interface{}); exists {
-						if item, exists := params["item"].(map[string]interface{}); exists {
-							itemType, _ := item["type"].(string)
-							text, _ := item["text"].(string)
-							if itemType == "agentMessage" && text != "" {
-								responseChan <- remoteResponseEvent{kind: "final", text: text}
-							}
-						}
-					}
-				case "turn/completed":
-					responseChan <- remoteResponseEvent{kind: "turn_completed", text: ""}
-				case "error":
-					if params, exists := raw["params"].(map[string]interface{}); exists {
-						if msg, exists := params["message"].(string); exists {
-							responseChan <- remoteResponseEvent{kind: "error", text: fmt.Sprintf("[Error] %s", msg)}
-						}
-					}
-				}
-			}
+	if mode == "codex" {
+		appServerCmd = exec.Command("codex", "app-server", "--stdio")
+		var err error
+		stdin, err = appServerCmd.StdinPipe()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get stdin pipe: %v\n", err)
+			os.Exit(1)
 		}
-	}()
+		stdout, err = appServerCmd.StdoutPipe()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get stdout pipe: %v\n", err)
+			os.Exit(1)
+		}
 
-	// 3. Initialize app-server protocol handshake
-	writeJSONRPC("initialize", 0, map[string]interface{}{
-		"clientInfo": map[string]interface{}{
-			"name":    "agents_manager",
-			"title":   "agents-manager",
-			"version": "0.1.0",
-		},
-	})
+		if err := appServerCmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start codex app-server: %v\n", err)
+			_ = tg.sendMessage(chatID, "Error: Failed to launch codex app-server. Make sure codex CLI is installed.")
+			os.Exit(1)
+		}
+
+		defer func() {
+			_ = appServerCmd.Process.Kill()
+		}()
+
+		// Goroutine to read stdout from app-server
+		go func() {
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				line := scanner.Text()
+				fmt.Printf("<< Read app-server: %s\n", line)
+
+				var raw map[string]interface{}
+				if err := json.Unmarshal([]byte(line), &raw); err != nil {
+					continue
+				}
+
+				// Handle responses and notifications
+				method, _ := raw["method"].(string)
+				if method == "" {
+					// This is a response.
+					idVal, ok := raw["id"].(float64)
+					if ok {
+						if idVal == 0 { // Response to 'initialize'
+							// 1. Send initialized notification (client -> server)
+							writeJSONRPCForCodex(stdin, "initialized", nil, map[string]interface{}{})
+							// 2. Start thread immediately
+							writeJSONRPCForCodex(stdin, "thread/start", 1, map[string]interface{}{})
+						} else if idVal == 1 { // Response to 'thread/start'
+							if result, exists := raw["result"].(map[string]interface{}); exists {
+								if thread, exists := result["thread"].(map[string]interface{}); exists {
+									activeThreadID, _ = thread["id"].(string)
+									fmt.Printf("Codex active thread: %s\n", activeThreadID)
+									responseChan <- remoteResponseEvent{kind: "status", text: fmt.Sprintf("Codex thread started! (ID: %s)", activeThreadID)}
+								}
+							}
+						}
+					}
+				} else {
+					// This is a notification
+					switch method {
+					case "item/agentMessage/delta":
+						if params, exists := raw["params"].(map[string]interface{}); exists {
+							if delta, exists := params["delta"].(string); exists {
+								responseChan <- remoteResponseEvent{kind: "delta", text: delta}
+							}
+						}
+					case "item/completed":
+						if params, exists := raw["params"].(map[string]interface{}); exists {
+							if item, exists := params["item"].(map[string]interface{}); exists {
+								itemType, _ := item["type"].(string)
+								text, _ := item["text"].(string)
+								if itemType == "agentMessage" && text != "" {
+									responseChan <- remoteResponseEvent{kind: "final", text: text}
+								}
+							}
+						}
+					case "turn/completed":
+						responseChan <- remoteResponseEvent{kind: "turn_completed", text: ""}
+					case "error":
+						if params, exists := raw["params"].(map[string]interface{}); exists {
+							if msg, exists := params["message"].(string); exists {
+								responseChan <- remoteResponseEvent{kind: "error", text: fmt.Sprintf("[Error] %s", msg)}
+							}
+						}
+					}
+				}
+			}
+		}()
+
+		// 3. Initialize app-server protocol handshake
+		writeJSONRPCForCodex(stdin, "initialize", 0, map[string]interface{}{
+			"clientInfo": map[string]interface{}{
+				"name":    "agents_manager",
+				"title":   "agents-manager",
+				"version": "0.1.0",
+			},
+		})
+	}
+
+	var isGenerating int32 // 0 = idle, 1 = busy
+	var activeAgyConversationID string
+	var activeAgyLastStep int64 = -1
+
+	if mode == "agy" {
+		_ = tg.sendMessage(chatID, "Starting agy session...")
+		convID, lastStep, err := createAgySession(30 * time.Second)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize agy session: %v\n", err)
+			_ = tg.sendMessage(chatID, fmt.Sprintf("Failed to initialize agy session: %v", err))
+		} else {
+			activeAgyConversationID = convID
+			activeAgyLastStep = lastStep
+			_ = tg.sendMessage(chatID, fmt.Sprintf("Agy session started! (ID: %s)", convID))
+		}
+	}
 
 	// 4. Polling loop for Telegram messages & streaming response output
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -3301,24 +3601,130 @@ func remoteCommand(token string) {
 						if up.Message != nil && up.Message.Chat.ID == chatID {
 							text := up.Message.Text
 							fmt.Printf("Telegram user input: %s\n", text)
-							if activeThreadID == "" {
-								_ = tg.sendMessage(chatID, "Waiting for Codex thread to initialize...")
-								continue
-							}
+							if mode == "codex" {
+								if activeThreadID == "" {
+									_ = tg.sendMessage(chatID, "Waiting for Codex thread to initialize...")
+									continue
+								}
 
-							requestID := nextRequestID
-							nextRequestID++
-							outputState.beginTurn(time.Now().UnixNano())
-							// Send turn/start to start processing
-							writeJSONRPC("turn/start", requestID, map[string]interface{}{
-								"threadId": activeThreadID,
-								"input": []interface{}{
-									map[string]interface{}{
-										"type": "text",
-										"text": text,
+								requestID := nextRequestID
+								nextRequestID++
+								outputState.beginTurn(time.Now().UnixNano())
+								// Send turn/start to start processing
+								writeJSONRPCForCodex(stdin, "turn/start", requestID, map[string]interface{}{
+									"threadId": activeThreadID,
+									"input": []interface{}{
+										map[string]interface{}{
+											"type": "text",
+											"text": text,
+										},
 									},
-								},
-							})
+								})
+							} else if mode == "agy" {
+								if atomic.LoadInt32(&isGenerating) == 1 {
+									_ = tg.sendMessage(chatID, "Antigravity is busy. Please wait...")
+									continue
+								}
+								atomic.StoreInt32(&isGenerating, 1)
+								outputState.beginTurn(time.Now().UnixNano())
+
+								go func(promptText string) {
+									defer atomic.StoreInt32(&isGenerating, 0)
+
+									resumeConversationID := activeAgyConversationID
+									args := []string{}
+									if resumeConversationID != "" {
+										args = append(args, "--conversation", resumeConversationID)
+									}
+									args = append(args, "--print", promptText)
+									startedAt := time.Now()
+
+									augmentedPath := augmentedAgyPath()
+									cmd := exec.Command("agy", args...)
+									cmd.Env = append(os.Environ(), "PATH="+augmentedPath)
+
+									err := cmd.Start()
+									if err != nil {
+										responseChan <- remoteResponseEvent{kind: "error", text: fmt.Sprintf("Failed to start agy: %v", err)}
+										return
+									}
+									cmdDone := make(chan error, 1)
+									go func() {
+										cmdDone <- cmd.Wait()
+									}()
+
+									var tempConvID string
+									var cmdErr error
+									cmdFinished := false
+									transcriptTicker := time.NewTicker(100 * time.Millisecond)
+									transcriptTimeout := time.NewTimer(30 * time.Second)
+								waitForTranscript:
+									for {
+										select {
+										case <-transcriptTicker.C:
+											if resumeConversationID != "" {
+												if transcriptMatchesPrompt(agyTranscriptPath(resumeConversationID), promptText) {
+													tempConvID = resumeConversationID
+												}
+											} else {
+												tempConvID = getNewAgyConversationIDFromTranscripts(startedAt, "", promptText)
+											}
+											if tempConvID != "" {
+												if resumeConversationID == "" {
+													responseChan <- remoteResponseEvent{kind: "status", text: fmt.Sprintf("Agy session created! (ID: %s)", tempConvID)}
+												}
+												break waitForTranscript
+											}
+										case cmdErr = <-cmdDone:
+											cmdFinished = true
+											if resumeConversationID != "" {
+												if transcriptMatchesPrompt(agyTranscriptPath(resumeConversationID), promptText) {
+													tempConvID = resumeConversationID
+												}
+											} else {
+												tempConvID = getNewAgyConversationIDFromTranscripts(startedAt, "", promptText)
+											}
+											if tempConvID != "" {
+												if resumeConversationID == "" {
+													responseChan <- remoteResponseEvent{kind: "status", text: fmt.Sprintf("Agy session created! (ID: %s)", tempConvID)}
+												}
+												break waitForTranscript
+											}
+											if cmdErr != nil {
+												responseChan <- remoteResponseEvent{kind: "error", text: fmt.Sprintf("agy exited before transcript was found: %v", cmdErr)}
+											} else {
+												responseChan <- remoteResponseEvent{kind: "error", text: "agy exited before transcript was found."}
+											}
+											return
+										case <-transcriptTimeout.C:
+											_ = cmd.Process.Kill()
+											cmdErr = <-cmdDone
+											cmdFinished = true
+											responseChan <- remoteResponseEvent{kind: "error", text: "Timed out waiting for agy transcript for this prompt."}
+											return
+										}
+									}
+									transcriptTicker.Stop()
+									transcriptTimeout.Stop()
+
+									donePoll := make(chan struct{})
+									lastSentStep := activeAgyLastStep
+									go pollAgyTranscript(tempConvID, &lastSentStep, responseChan, donePoll)
+
+									if !cmdFinished {
+										cmdErr = <-cmdDone
+									}
+									close(donePoll)
+									activeAgyConversationID = tempConvID
+									activeAgyLastStep = latestAgyStepIndex(agyTranscriptPath(tempConvID))
+
+									if cmdErr != nil {
+										responseChan <- remoteResponseEvent{kind: "error", text: fmt.Sprintf("agy exited with error: %v", cmdErr)}
+									} else {
+										responseChan <- remoteResponseEvent{kind: "turn_completed", text: ""}
+									}
+								}(text)
+							}
 						}
 					}
 				}
@@ -3405,6 +3811,22 @@ func main() {
 		return
 	}
 
+	loadTokenFromEnvTest := func() string {
+		f, err := os.Open(".env.test")
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "TELEGRAM_BOT_TOKEN=") {
+				return strings.TrimPrefix(line, "TELEGRAM_BOT_TOKEN=")
+			}
+		}
+		return ""
+	}
+
 	if cmd == "remote" {
 		var token string
 		for i := 0; i < len(rest); i++ {
@@ -3416,7 +3838,10 @@ func main() {
 			}
 		}
 		if token == "" {
-			fmt.Fprintln(os.Stderr, "Error: --telegram <token> is required for remote command")
+			token = loadTokenFromEnvTest()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "Error: --telegram <token> is required for remote command or configure it in .env.test")
 			os.Exit(1)
 		}
 		remoteCommand(token)
