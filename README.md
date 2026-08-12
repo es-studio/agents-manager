@@ -13,7 +13,6 @@
 * **codex**: `~/.codex/session_index.jsonl` 및 개별 세션 롤아웃 로그 분석 (프로젝트 CWD 및 첫 유저 메시지 복구)
 * **claude code**: `~/.claude/projects/*/*.jsonl` 프로젝트별 로그 분석 (세션 최종 업데이트 시각 및 CWD 복구)
 * **cursor-agent**: `~/.cursor/projects/<projectDir>/agent-transcripts/` 로그 분석 (제목에서 `<user_query>` 태그 필터링 제공)
-* **gemini**: `~/.gemini/tmp/*/chats/session-*.json` 세션 데이터 및 `.project_root` 파일 파싱
 
 ### 2. 세션 리스트 조회 및 병합 정렬
 * 기본적으로 각 프로바이더(에이전트)별로 그룹화된 테이블 형태로 세션들을 조회합니다.
@@ -80,8 +79,10 @@ am remote --telegram <bot-token>
 ```
 
 ### 지원하는 글로벌 옵션
-* `--provider P`: 특정 프로바이더만 조회 (예: `--provider gemini --provider codex`)
-* `--limit N`: 각 프로바이더별 또는 병합 조회 시 노출할 최대 세션 개수 (기본값: 20)
+* `--provider P`: 특정 프로바이더만 조회 (예: `--provider claude --provider codex`)
+* `-n, --limit N`: 각 프로바이더별 또는 병합 조회 시 노출할 최대 세션 개수 (기본값: 20)
+* `-p, --period D`: 최근 D일 동안의 세션만 필터링 (기본값: 7일)
+* `--all`: 개수 제한(-n)과 기간 제한(-p)을 모두 무시하고 전체 표시
 * `--json`: 결과를 JSON 포맷으로 출력 (외부 스크립트 연동 시 유용)
 * `--debug`: 스캔 및 파싱 과정의 디버그 로그 출력
 
