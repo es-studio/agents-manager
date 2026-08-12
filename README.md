@@ -37,13 +37,13 @@
 ### Go 툴체인을 이용한 직접 설치
 Go가 설치되어 있다면 아래 명령어로 즉시 바이너리를 빌드하여 시스템 전역에서 사용할 수 있도록 설치할 수 있습니다.
 ```bash
-go install github.com/eunsung-han/agents-manager@latest
+go install github.com/es-studio/agents-manager@latest
 ```
 
 ### 소스코드에서 수동 빌드
 저장소를 로컬에 클론한 뒤 직접 빌드할 수 있습니다.
 ```bash
-git clone https://github.com/eunsung-han/agents-manager.git
+git clone https://github.com/es-studio/agents-manager.git
 cd agents-manager
 go build -o am am.go
 ```
