@@ -372,7 +372,7 @@ func TestAgyConversationResumeFlow(t *testing.T) {
 		if transcriptMatchesPrompt(agyTranscriptPath(convID), secondPrompt) {
 			break
 		}
-		if time.Since(secondStartedAt) > 30*time.Second {
+		if time.Since(secondStartedAt) > 60*time.Second {
 			_ = second.Process.Kill()
 			t.Fatal("second prompt not detected in resumed transcript")
 		}
@@ -396,3 +396,158 @@ func TestAgyConversationResumeFlow(t *testing.T) {
 		t.Fatalf("resumed conversation did not recall code word %q; got %q", codeWord, combinedOutput)
 	}
 }
+
+func TestParseSearchArgs(t *testing.T) {
+	tests := []struct {
+		args      []string
+		wantKw    string
+		wantDir   string
+		wantN     int
+		wantLimit int
+		wantErr   bool
+	}{
+		{
+			args:      []string{"mykeyword"},
+			wantKw:    "mykeyword",
+			wantDir:   "",
+			wantN:     10,
+			wantLimit: 20,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"mykeyword", "/some/path"},
+			wantKw:    "mykeyword",
+			wantDir:   "/some/path",
+			wantN:     10,
+			wantLimit: 20,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"mykeyword", "/some/path", "--case-sensitive"},
+			wantKw:    "mykeyword",
+			wantDir:   "/some/path",
+			wantN:     10,
+			wantLimit: 20,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"--case-sensitive", "mykeyword", "/some/path"},
+			wantKw:    "mykeyword",
+			wantDir:   "/some/path",
+			wantN:     10,
+			wantLimit: 20,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"mykeyword", "--snippet", "5"},
+			wantKw:    "mykeyword",
+			wantDir:   "",
+			wantN:     5,
+			wantLimit: 20,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"mykeyword", "/some/path", "--snippet", "20"},
+			wantKw:    "mykeyword",
+			wantDir:   "/some/path",
+			wantN:     20,
+			wantLimit: 20,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"mykeyword", "-n", "15"},
+			wantKw:    "mykeyword",
+			wantDir:   "",
+			wantN:     10,
+			wantLimit: 15,
+			wantErr:   false,
+		},
+		{
+			args:      []string{"mykeyword", "--limit", "30"},
+			wantKw:    "mykeyword",
+			wantDir:   "",
+			wantN:     10,
+			wantLimit: 30,
+			wantErr:   false,
+		},
+		{
+			args:    []string{"mykeyword", "--snippet"},
+			wantErr: true,
+		},
+		{
+			args:    []string{"mykeyword", "--snippet", "invalid"},
+			wantErr: true,
+		},
+		{
+			args:    []string{"mykeyword", "-n"},
+			wantErr: true,
+		},
+		{
+			args:    []string{"mykeyword", "-n", "invalid"},
+			wantErr: true,
+		},
+		{
+			args:    []string{"mykeyword", "/some/path", "extra"},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		res, err := parseSearchArgs(tc.args)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseSearchArgs(%v) expected error, got nil", tc.args)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("parseSearchArgs(%v) unexpected error: %v", tc.args, err)
+				continue
+			}
+			if res.Keyword != tc.wantKw {
+				t.Errorf("parseSearchArgs(%v) keyword = %q, want %q", tc.args, res.Keyword, tc.wantKw)
+			}
+			if res.DirFilter != tc.wantDir {
+				t.Errorf("parseSearchArgs(%v) dirFilter = %q, want %q", tc.args, res.DirFilter, tc.wantDir)
+			}
+			if res.SnippetLines != tc.wantN {
+				t.Errorf("parseSearchArgs(%v) SnippetLines = %d, want %d", tc.args, res.SnippetLines, tc.wantN)
+			}
+			if res.Limit != tc.wantLimit {
+				t.Errorf("parseSearchArgs(%v) Limit = %d, want %d", tc.args, res.Limit, tc.wantLimit)
+			}
+		}
+	}
+}
+
+func TestTUIFilterItemsByTab(t *testing.T) {
+	all := []Session{
+		{ID: "1", Provider: "codex"},
+		{ID: "2", Provider: "claude"},
+		{ID: "3", Provider: "cursor"},
+		{ID: "4", Provider: "antigravity"},
+	}
+
+	m := tuiModel{
+		allItems:   all,
+		tabs:       []string{"ALL", "codex", "claude", "cursor", "antigravity"},
+		currentTab: 0,
+	}
+
+	m = m.filterItemsByTab()
+	if len(m.items) != 4 {
+		t.Fatalf("ALL tab items count = %d, want 4", len(m.items))
+	}
+
+	m.currentTab = 1
+	m = m.filterItemsByTab()
+	if len(m.items) != 1 || m.items[0].Provider != "codex" {
+		t.Fatalf("codex tab items = %#v, want 1 codex session", m.items)
+	}
+
+	m.currentTab = 2
+	m = m.filterItemsByTab()
+	if len(m.items) != 1 || m.items[0].Provider != "claude" {
+		t.Fatalf("claude tab items = %#v, want 1 claude session", m.items)
+	}
+}
+

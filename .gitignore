@@ -19,3 +19,7 @@ bin/
 
 # Antigravity CLI metadata
 .antigravitycli/
+
+# Local secrets and build output
+.env.test
+agents-manager

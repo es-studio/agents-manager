@@ -46,17 +46,17 @@ go install github.com/es-studio/agents-manager@latest
 ```bash
 git clone https://github.com/es-studio/agents-manager.git
 cd agents-manager
-go build -o am am.go
+go build -o am .
 ```
 
 ---
 
 ## 📖 CLI 명령어 명세
 
-### 세션 이력 조회 (`am sessions`)
+### 세션 이력 조회 (`am sessions` / `am history`)
 ```bash
-# 전체 세션 최근 20개 조회 (프로바이더별 정렬)
-am sessions
+# 전체 세션 최근 20개 조회 (am history는 am sessions의 별칭)
+am history
 
 # 특정 프로젝트 디렉토리 기준 병합 조회
 am sessions /Users/eunsung/dev/my-project
@@ -73,6 +73,22 @@ am search "오류 메시지"
 # 대소문자 구분 검색
 am search "NullPointerException" --case-sensitive
 ```
+
+### 커스텀 상태줄로 Codex 실행 (`am launch codex`)
+```bash
+am launch codex
+am launch codex --model <model>
+am launch codex resume --last
+am launch config
+```
+
+`tmux`, `lsof`, `--no-daemon`을 지원하는 Codex CLI가 필요합니다(0.161.0 검증). 실행마다 별도 tmux 서버를 만들고, 해당 실행에서만 Codex의 설정된 상태줄 항목을 끕니다. Codex를 종료하면 추가로 연 창까지 전용 서버가 종료되며 다른 tmux 세션에는 영향을 주지 않습니다. `Ctrl-b d`는 Codex를 종료하지 않고 분리합니다. 시작할 때 출력한 명령으로 다시 연결할 수 있습니다. 기존 tmux 안에서는 prefix를 두 번 눌러 내부 tmux에 전달합니다. 마우스 휠 스크롤이 활성화됩니다. `Ctrl-b [`로 tmux 스크롤 모드에 들어가고 `q`로 돌아올 수 있습니다.
+
+하단에는 모델(추론 수준), 폴더, 누적 입력/출력 토큰, 남은 컨텍스트, 진행 중 응답 수(`tasks:0` 또는 `tasks:1`), 5시간/주간 잔여 한도와 초기화까지의 시간, Codex 버전을 표시하며 플랜 식별자는 제외합니다. 제공되지 않는 한도 항목은 숨기고 나머지 미확인 값은 `--`로 표시합니다. 모델은 청록색, 폴더는 보라색, 토큰은 청회색, 버전은 회색입니다. 컨텍스트·한도 잔여량은 25% 초과면 초록색, 25% 이하면 노란색, 10% 이하면 빨간색이며 진행 중 작업은 노란색입니다. 컨텍스트는 로그의 최근 토큰 수/컨텍스트 크기로 계산하므로 Codex 내부 보정 비율과 다를 수 있습니다. 터미널 폭을 넘는 내용은 잘립니다.
+
+`am launch config`는 상태줄 항목을 편집하는 TUI를 엽니다. `space`로 항목을 켜고 끄고, `shift+up/down`(또는 `K`/`J`)으로 순서를 바꾸고, `r`로 기본값을 되돌리고, `enter`로 저장하고, `q`로 취소합니다. 결과 줄을 미리보기로 보여줍니다. 기본 항목 외에 선택할 수 있는 항목은 git 브랜치(커밋하지 않은 변경이 있으면 `*`, 5초마다 갱신), 사용 컨텍스트/창 크기, 캐시 입력 비율, 추론 토큰, 마지막 턴 토큰, 총 토큰, 턴 수, 턴 시간(진행 중이면 경과, 아니면 마지막 턴 소요), 실행 후 경과 시간, 도구 호출 수, 마지막 셸 명령, 승인 정책, 샌드박스 정책(`danger-full-access`는 빨간색), 협업 모드, 성격, 서비스 등급, 짧은 세션 id, 현재 시각입니다. `f`로 fast 모드를 켜고 끕니다. 켜면 `am launch codex`가 전달 인자 앞에 `-c service_tier="fast"`를 붙이므로, 명령줄에 직접 쓴 `-c service_tier=...`가 우선합니다. 끄면 아무것도 붙이지 않고 Codex 설정을 그대로 따릅니다. 설정은 `~/.config/am/launch.json`(또는 `$XDG_CONFIG_HOME/am/launch.json`)에 저장하며 다음 `am launch codex`를 시작할 때 읽습니다. 이미 실행 중인 세션의 상태줄은 바뀌지 않습니다.
+
+실행한 Codex 프로세스 트리가 연 rollout 로그만 1초마다 읽습니다. 같은 폴더의 다른 세션이나 전역 최신 세션과 혼동하지 않으며 resume도 지원합니다. 상태줄은 Codex 시작 전에 설정합니다. 버전·유효 모델/추론 설정·계정 한도는 임시 Codex app-server로 비동기 조회하며 프롬프트를 보내지 않습니다(8초 제한). CLI의 모델·설정·작업 폴더 옵션을 반영합니다. 토큰·컨텍스트는 실측 전까지 `--`입니다. resume/fork, 프로필, OSS, 원격 실행은 다른 세션 설정을 잘못 표시하지 않도록 모델·한도 초기 조회를 생략하며, 이후 로컬 rollout 값이 우선합니다. 로컬 rollout이 없는 원격 서버 세션에서는 해당 항목을 표시할 수 없습니다.
 
 ### Telegram 원격 브리지 (`am remote`)
 ```bash

@@ -24,9 +24,11 @@ Only the first genuine user message counts as the title.
 
 ```
 am sessions [--provider P]... [-n|--limit N] [-p|--period D] [--all] [--project SUB] [--json] [--debug]
+am history [<dir>] [options]
 am sessions <dir> [options]
 am search <keyword> [<dir>] [options]
 am remote --telegram <token>
+am completion <shell>
 ```
 
 When cleaning up `am remote` tests, terminate only the `./am remote` process tree and its child `codex app-server --stdio` / MCP helper processes. Do not kill `/Applications/Codex.app/.../codex app-server --analytics-default-enabled`; that belongs to the desktop app.
@@ -75,3 +77,15 @@ Active by default when `am sessions` or `am sessions <dir>` runs in a TTY. Disab
 - `Id` column is always full (never truncated/ellipsized) and is the leftmost column.
 - Provider-grouped table for plain `am sessions`; single merged table for `am sessions <dir>`.
 - ASCII-only in TUI strings (no `…`, no unicode arrows) to keep width math reliable.
+
+## Codex launch wrapper
+
+The status bar's `in`/`out` token counts use one decimal place with `k` (1,000) and `M` (1,000,000); counts below 1,000 remain integers.
+
+`am launch codex [args...]` lives in `internal/codexlaunch`. Each invocation owns a unique `am-codex-*` tmux server; cleanup must target only that server. Enable `mouse` on that dedicated server for wheel scrolling; `Ctrl-b [` opens tmux scrollback and `q` exits it. The private `_launch-codex` entry point supervises Codex inside its pane. Forward arguments as argv, never interpolate them into shell commands. Use `--no-daemon` so rollout ownership can be resolved through the launched process tree using `lsof`; never choose the globally newest log or match cwd alone. Parse rate-limit windows by `window_minutes`, not primary/secondary order. Unavailable quota windows are omitted; other missing telemetry stays `--`. Do not render plan identifiers. `tasks` counts active top-level turns, not subagents. Escape tmux `#` sequences in each log-derived segment before adding trusted color/style markup; do not escape the fully styled line.
+
+`am launch config` edits which status segments are shown and in what order (Bubble Tea editor in `configtui.go`). Segments are keyed by `segmentSpecs` in `config.go` (26 keys; 8 enabled by default, the rest off). New segments go in `segmentSpecs` plus `status.segments()` and the TUI sample. Segment data comes from the rollout log (`turn_context`, `task_started`/`task_complete` with `root_turn_id` for top-level turns, `response_item` tool call types, `item_completed` CommandExecution, `thread_settings_applied`) except branch/dirty (`git` in `git.go`, polled only when enabled) and uptime (launcher start). The config lives at `~/.config/am/launch.json` (`$XDG_CONFIG_HOME/am/launch.json`; tests override with `AM_CONFIG_DIR`). Loading normalizes the file: unknown/duplicate keys are dropped and segments missing from the file are appended with their default visibility, so adding a segment never requires users to edit their config. The config is read once in `RunPane` at launch; it never changes a running session. Saving with every item disabled is refused. The same file holds `fast_mode` (toggled with `f` in the editor); when true, `codexArgs` inserts `-c service_tier="fast"` right after `--no-daemon`, ahead of user arguments, so a user-supplied `-c service_tier=...` overrides it. When false nothing is inserted. The launch integration test sets `AM_CONFIG_DIR` so the real user config never leaks into it.
+
+Build the whole package (`go build -o am .`), not just `am.go`. Local verification: `go test ./... -skip 'TestAgy(RemoteCommunicationFlow|ConversationResumeFlow)' -timeout 60s` and `go vet ./...`. The excluded existing tests make live external agy requests. The launch integration test uses a fake Codex process and isolated real tmux servers.
+
+Startup telemetry uses a short-lived read-only `codex app-server --stdio` (`config/read`, `account/rateLimits/read`) with a bounded timeout and process-group cleanup. Never start a model turn just to populate the status line. Bootstrap values only fill missing live fields; a late startup response must not replace an active session model or usage.

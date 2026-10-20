@@ -47,17 +47,17 @@ You can also clone the repository locally and build it manually.
 ```bash
 git clone https://github.com/es-studio/agents-manager.git
 cd agents-manager
-go build -o am am.go
+go build -o am .
 ```
 
 ---
 
 ## 📖 CLI Command Reference
 
-### Query Session History (`am sessions`)
+### Query Session History (`am sessions` / `am history`)
 ```bash
-# Query the latest 20 sessions globally (grouped by provider)
-am sessions
+# Query the latest 20 sessions globally (am history is an alias for am sessions)
+am history
 
 # Query and merge sessions targeting a specific project directory
 am sessions /Users/eunsung/dev/my-project
@@ -74,6 +74,22 @@ am search "error message"
 # Case-sensitive search
 am search "NullPointerException" --case-sensitive
 ```
+
+### Launch Codex with a Custom Status Line (`am launch codex`)
+```bash
+am launch codex
+am launch codex --model <model>
+am launch codex resume --last
+am launch config
+```
+
+Requires `tmux`, `lsof`, and a Codex CLI that supports `--no-daemon` (verified with 0.161.0). Every launch uses a separate tmux server and disables the configured Codex status-line items for that invocation. Exiting Codex closes that server, including any extra windows, without touching other tmux sessions. `Ctrl-b d` detaches without stopping Codex; the launcher prints the reattach command. Inside an existing tmux, send the prefix twice to reach the inner server. Mouse scrolling is enabled. Use `Ctrl-b [` to open tmux scrollback and `q` to return.
+
+The bottom line shows model (reasoning), directory, cumulative input/output tokens, remaining context, active turns (`tasks:0` or `tasks:1`), remaining 5-hour/7-day quotas with reset countdowns, and Codex version. Plan identifiers are omitted. Unavailable quota windows are hidden; other missing values are `--`. The model is cyan, directory purple, token counts blue-gray, and version gray. Remaining context/quota is green above 25%, yellow at 25% or less, and red at 10% or less; active tasks are yellow. Context uses the latest token count divided by the logged model context window, which can differ from Codex's own adjusted context percentage. Long lines are clipped to the terminal width.
+
+`am launch config` opens an interactive editor for the status line: `space` toggles an item, `shift+up/down` (or `K`/`J`) moves it, `r` restores the defaults, `enter` saves and `q` cancels. A live preview shows the resulting line. Beyond the defaults above, the optional items are: git branch (with `*` for uncommitted changes, refreshed every 5 seconds), context used / window, cached-input ratio, reasoning tokens, last-turn tokens, total tokens, turn count, turn time (running turn or last turn's duration), launch uptime, tool call count, last shell command, approval policy, sandbox policy (red for `danger-full-access`), collaboration mode, personality, service tier, short session id and current time. `f` toggles fast mode: when on, `am launch codex` adds `-c service_tier="fast"` before the forwarded arguments, so an explicit `-c service_tier=...` on the command line still wins; when off, nothing is added and the Codex config applies. The config is stored in `~/.config/am/launch.json` (or `$XDG_CONFIG_HOME/am/launch.json`) and is read when the next `am launch codex` starts; a running session keeps the layout it started with.
+
+Status refreshes every second from rollout files opened by the launched Codex process tree, including resumed sessions. It does not select another session based on a shared working directory or latest global timestamp. The status line is installed before Codex starts. Version, effective model/reasoning settings and account quotas are fetched asynchronously through a short-lived, read-only Codex app-server (8-second timeout), without sending a prompt. CLI model/config/cwd overrides are respected. Tokens and context stay `--` until measured. For resume/fork, profiles, OSS or remote sessions, model/account bootstrap is skipped to avoid displaying settings from the wrong session; local rollout values still take precedence. Remote-server sessions without a local rollout cannot supply these fields.
 
 ### Telegram Remote Bridge (`am remote`)
 ```bash

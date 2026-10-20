@@ -11,18 +11,23 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/es-studio/agents-manager/internal/codexlaunch"
 )
 
 const usageStr = `am (agents-manager): local agent session history viewer
 
 Usage:
   am --help
-  am sessions [options]
-  am sessions <dir> [options]
+  am sessions [<dir>] [options]
+  am history [<dir>] [options]
   am search <keyword> [<dir>] [options]
   am remote --telegram <token>
+  am launch codex [codex arguments...]
+  am launch config
+  am completion <shell>
 
-Options (sessions):
+Options (sessions / history):
   --provider <name>   Filter providers (repeatable). One of: codex, claude, cursor, antigravity
   -n, --limit <n>     Limit rows (default: 20). In <dir> mode this applies to merged results.
   -p, --period <days> Search recent days (default: 7). Ignored if --all is set.
@@ -34,7 +39,7 @@ Options (sessions):
   --copy-context, -cc <id> Copy one session context to clipboard by exact id or unique id prefix
   --json              Output JSON to stdout
   --debug             Print debug info to stderr
-  --help              Show help
+  -h, --help          Show help
 
 Options (search):
   <keyword>           Substring to find in session transcript / title / project
@@ -43,19 +48,275 @@ Options (search):
   -n, --limit <n>     Limit matched rows (default: 20). Use --all to disable.
   -p, --period <days> Search recent days (default: 7). Ignored if --all is set.
   --all               Disable limit and period filter
-  --case-sensitive    Case-sensitive match (default: case-insensitive)
+  -s, --case-sensitive Case-sensitive match (default: case-insensitive)
   --project <substr>  Additional substring filter on project/cwd/title/id
   --snippet <lines>   Number of transcript lines to show in snippet (default: 10)
   --tui / --no-tui    Same selector behavior as ` + "`" + `sessions <dir>` + "`" + `
   --json              Output JSON (includes a short snippet around the first hit)
   --debug             Print debug info to stderr
+  -h, --help          Show help
 
 Options (remote):
   --telegram <token>  Bridge codex / agy / claude over stdio through a Telegram bot
-                      (pick the agent with /start_codex, /start_agy or /start_claude)`
+                      (pick the agent with /start_codex, /start_agy or /start_claude)
+  -h, --help          Show help`
+
+const sessionsUsageStr = `Usage:
+  am sessions [<dir>] [options]
+
+Parameters:
+  <dir>               Filter by directory (exact match). When provided, output is merged across providers.
+
+Options:
+  --provider <name>   Filter providers (repeatable). One of: codex, claude, cursor, antigravity
+  -n, --limit <n>     Limit rows (default: 20). In <dir> mode this applies to merged results.
+  -p, --period <days> Search recent days (default: 7). Ignored if --all is set.
+  --all               Disable limit and period filter
+  --project <substr>  Filter by substring on project/cwd/projectRoot/title
+  --copy-context, -cc <id> Copy one session context to clipboard by exact id or unique id prefix
+  --tui               Force interactive selector (TTY only)
+  --no-tui            Disable interactive selector
+  --json              Output JSON to stdout
+  --debug             Print debug info to stderr
+  -h, --help          Show help`
+
+const historyUsageStr = `Usage:
+  am history [<dir>] [options]
+
+Parameters:
+  <dir>               Filter by directory (exact match). When provided, output is merged across providers.
+
+Options:
+  --provider <name>   Filter providers (repeatable). One of: codex, claude, cursor, antigravity
+  -n, --limit <n>     Limit rows (default: 20). In <dir> mode this applies to merged results.
+  -p, --period <days> Search recent days (default: 7). Ignored if --all is set.
+  --all               Disable limit and period filter
+  --project <substr>  Filter by substring on project/cwd/projectRoot/title
+  --copy-context, -cc <id> Copy one session context to clipboard by exact id or unique id prefix
+  --tui               Force interactive selector (TTY only)
+  --no-tui            Disable interactive selector
+  --json              Output JSON to stdout
+  --debug             Print debug info to stderr
+  -h, --help          Show help`
+
+const searchUsageStr = `Usage:
+  am search <keyword> [<dir>] [options]
+
+Parameters:
+  <keyword>           Substring to find in session transcript / title / project (required)
+  <dir>               Optional directory to filter sessions (exact match)
+
+Options:
+  --provider <name>   Filter providers (repeatable). One of: codex, claude, cursor, antigravity
+  -n, --limit <n>     Limit matched rows (default: 20). Use --all to disable.
+  -p, --period <days> Search recent days (default: 7). Ignored if --all is set.
+  --all               Disable limit and period filter
+  -s, --case-sensitive Case-sensitive match (default: case-insensitive)
+  --project <substr>  Additional substring filter on project/cwd/title/id
+  --snippet <lines>   Number of transcript lines to show in snippet (default: 10)
+  --tui               Force interactive selector (TTY only)
+  --no-tui            Disable interactive selector
+  --json              Output JSON (includes a short snippet around the first hit)
+  --debug             Print debug info to stderr
+  -h, --help          Show help`
+
+const remoteUsageStr = `Usage:
+  am remote --telegram <token>
+
+Options:
+  --telegram <token>  Bridge codex / agy / claude over stdio through a Telegram bot
+                      (pick the agent with /start_codex, /start_agy or /start_claude)
+  -h, --help          Show help`
+
+const completionUsageStr = `Usage:
+  am completion <shell>
+
+Arguments:
+  <shell>             Shell to generate completions for: zsh, bash`
+
+const zshCompletionScript = `#compdef am
+
+_am_providers() {
+    local -a providers
+    providers=(
+        'codex:OpenAI Codex CLI agent'
+        'claude:Claude Code CLI agent'
+        'cursor:Cursor Agent'
+        'antigravity:Google Antigravity CLI agent'
+    )
+    _describe -t providers 'provider' providers
+}
+
+_am_sessions() {
+    _arguments -s -S \
+        '--provider=[Filter provider (repeatable)]:provider:_am_providers' \
+        '(-n --limit)'{-n+,--limit=}'[Limit rows (default: 20)]:number:' \
+        '(-p --period)'{-p+,--period=}'[Search recent days (default: 7)]:days:' \
+        '--all[Disable limit and period filter]' \
+        '--project=[Filter by substring on project/cwd/projectRoot/title]:substring:' \
+        '(-cc --copy-context)'{-cc+,--copy-context=}'[Copy session context to clipboard by id]:session id:' \
+        '--tui[Force interactive selector (TTY only)]' \
+        '--no-tui[Disable interactive selector]' \
+        '--json[Output JSON to stdout]' \
+        '--debug[Print debug info to stderr]' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '1:directory:_files -/'
+}
+
+_am_search() {
+    _arguments -s -S \
+        '--provider=[Filter provider (repeatable)]:provider:_am_providers' \
+        '(-n --limit)'{-n+,--limit=}'[Limit matched rows (default: 20)]:number:' \
+        '(-p --period)'{-p+,--period=}'[Search recent days (default: 7)]:days:' \
+        '--all[Disable limit and period filter]' \
+        '(-s --case-sensitive)'{-s,--case-sensitive}'[Case-sensitive match]' \
+        '--project=[Additional substring filter on project/cwd/title/id]:substring:' \
+        '--snippet=[Number of transcript lines to show in snippet (default: 10)]:lines:' \
+        '--tui[Force interactive selector (TTY only)]' \
+        '--no-tui[Disable interactive selector]' \
+        '--json[Output JSON]' \
+        '--debug[Print debug info to stderr]' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '1:keyword:' \
+        '2:directory:_files -/'
+}
+
+_am_remote() {
+    _arguments -s -S \
+        '--telegram=[Bridge agents over stdio through Telegram bot]:bot token:' \
+        '(-h --help)'{-h,--help}'[Show help]'
+}
+
+_am() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    local -a commands
+    commands=(
+        'sessions:Query and browse local agent session history'
+        'history:Query and browse local agent session history (alias for sessions)'
+        'search:Search conversation transcripts and titles'
+        'launch:Launch Codex with a custom tmux status line'
+        'remote:Bridge agents over stdio through Telegram'
+        'completion:Generate shell completion script'
+        'help:Show help for a command'
+    )
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '--debug[Print debug info to stderr]' \
+        '1:command:->command' \
+        '*::args:->args'
+
+    case $state in
+        command)
+            _describe -t commands 'am command' commands
+            ;;
+        args)
+            case $line[1] in
+                sessions|history)
+                    _am_sessions
+                    ;;
+                search)
+                    _am_search
+                    ;;
+                launch)
+                    _arguments '1:provider:(codex config)' '*:codex argument:'
+                    ;;
+                remote)
+                    _am_remote
+                    ;;
+                completion)
+                    local -a shells
+                    shells=('zsh:Zsh completion' 'bash:Bash completion')
+                    _describe -t shells 'shell' shells
+                    ;;
+                help)
+                    _describe -t commands 'command' commands
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+if [ "$funcstack[1]" = "_am" ]; then
+    _am "$@"
+else
+    compdef _am am 2>/dev/null || true
+    compdef _am /Users/eunsung/dev/am/am 2>/dev/null || true
+fi
+`
+
+const bashCompletionScript = `_am_completions() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="sessions history search remote launch completion help"
+    local sessions_opts="--provider -n --limit -p --period --all --project --copy-context -cc --tui --no-tui --json --debug -h --help"
+    local search_opts="--provider -n --limit -p --period --all -s --case-sensitive --project --snippet --tui --no-tui --json --debug -h --help"
+    local remote_opts="--telegram -h --help"
+    local providers="codex claude cursor antigravity"
+
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "$commands -h --help --debug" -- "$cur"))
+        return
+    fi
+
+    local cmd="${words[1]}"
+    case "$cmd" in
+        sessions|history)
+            if [[ "$prev" == "--provider" ]]; then
+                COMPREPLY=($(compgen -W "$providers" -- "$cur"))
+                return
+            fi
+            COMPREPLY=($(compgen -W "$sessions_opts" -- "$cur"))
+            ;;
+        search)
+            if [[ "$prev" == "--provider" ]]; then
+                COMPREPLY=($(compgen -W "$providers" -- "$cur"))
+                return
+            fi
+            COMPREPLY=($(compgen -W "$search_opts" -- "$cur"))
+            ;;
+        launch)
+            if [[ $cword -eq 2 ]]; then COMPREPLY=($(compgen -W "codex config" -- "$cur")); fi
+            ;;
+        remote)
+            COMPREPLY=($(compgen -W "$remote_opts" -- "$cur"))
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "zsh bash" -- "$cur"))
+            ;;
+        help)
+            COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            ;;
+    esac
+}
+complete -F _am_completions am
+`
 
 func usage() string {
 	return usageStr
+}
+
+func sessionsUsage() string {
+	return sessionsUsageStr
+}
+
+func historyUsage() string {
+	return historyUsageStr
+}
+
+func searchUsage() string {
+	return searchUsageStr
+}
+
+func remoteUsage() string {
+	return remoteUsageStr
+}
+
+func completionUsage() string {
+	return completionUsageStr
 }
 
 type SessionsArgs struct {
@@ -242,11 +503,11 @@ func parseSearchArgs(args []string) (*SearchArgs, error) {
 			i++
 		case "--snippet":
 			if i+1 >= len(args) {
-				return nil, errors.New("missing argument for -n")
+				return nil, errors.New("missing argument for --snippet")
 			}
 			val, err := strconv.Atoi(args[i+1])
 			if err != nil {
-				return nil, fmt.Errorf("invalid -n value: %s", args[i+1])
+				return nil, fmt.Errorf("invalid --snippet value: %s", args[i+1])
 			}
 			res.SnippetLines = val
 			i++
@@ -437,7 +698,7 @@ func sessionsCommand(ns *SessionsArgs) {
 			return
 		}
 		if wantTUI(ns.NoTUI, ns.TUI) {
-			action, sid, ok := tuiSelectID(merged, normPath(dirFilter), nil)
+			action, sid, ok := tuiSelectID(merged, normPath(dirFilter), ns.Providers)
 			if ok {
 				if action == "copy-context" {
 					session, err := findSessionByID(merged, sid)
@@ -665,7 +926,7 @@ func searchCommand(ns *SearchArgs) {
 		if ns.DirFilter != "" {
 			tuiTitle = fmt.Sprintf("search: %s | dir: %s", keyword, ns.DirFilter)
 		}
-		action, sid, ok := tuiSelectID(matched, tuiTitle, nil)
+		action, sid, ok := tuiSelectID(matched, tuiTitle, ns.Providers)
 		if ok {
 			if action == "copy-context" {
 				session, err := findSessionByID(matched, sid)
@@ -707,6 +968,13 @@ func searchCommand(ns *SearchArgs) {
 
 func main() {
 	argv := os.Args[1:]
+	if len(argv) > 0 && argv[0] == "_launch-codex" {
+		if err := codexlaunch.RunPane(argv[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if len(argv) == 0 || argv[0] == "--help" || argv[0] == "-h" {
 		fmt.Println(usage())
@@ -721,7 +989,7 @@ func main() {
 		}
 	}
 
-	cmd, candidates, err := resolveCommand(argv[0], []string{"sessions", "search", "remote"})
+	cmd, candidates, err := resolveCommand(argv[0], []string{"sessions", "history", "search", "remote", "launch", "completion", "help"})
 	if err != nil {
 		if len(candidates) > 0 {
 			for _, c := range candidates {
@@ -730,19 +998,75 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprintln(os.Stderr, "\nTry: am sessions | am search <keyword> | am remote --telegram <token>")
+		fmt.Fprintln(os.Stderr, "\nTry: am sessions | am history | am search <keyword> | am remote --telegram <token> | am completion <shell>")
 		os.Exit(1)
 	}
 	rest := argv[1:]
 
-	if cmd == "sessions" {
-		ns, err := parseSessionsArgs(rest)
+	if cmd == "help" {
+		if len(rest) == 0 {
+			fmt.Println(usage())
+			return
+		}
+		targetCmd, _, err := resolveCommand(rest[0], []string{"sessions", "history", "search", "remote", "launch", "completion"})
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "Unknown command %q for help\n\n%s\n", rest[0], usage())
+			os.Exit(1)
+		}
+		switch targetCmd {
+		case "sessions":
+			fmt.Println(sessionsUsage())
+		case "history":
+			fmt.Println(historyUsage())
+		case "search":
+			fmt.Println(searchUsage())
+		case "launch":
+			fmt.Println(codexlaunch.Usage)
+		case "remote":
+			fmt.Println(remoteUsage())
+		case "completion":
+			fmt.Println(completionUsage())
+		}
+		return
+	}
+
+	if cmd == "launch" {
+		if err := codexlaunch.Run(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		return
+	}
+
+	if cmd == "completion" {
+		if len(rest) == 0 || rest[0] == "-h" || rest[0] == "--help" {
+			fmt.Println(completionUsage())
+			return
+		}
+		switch rest[0] {
+		case "zsh":
+			fmt.Print(zshCompletionScript)
+		case "bash":
+			fmt.Print(bashCompletionScript)
+		default:
+			fmt.Fprintf(os.Stderr, "unsupported shell: %s\n\n%s\n", rest[0], completionUsage())
+			os.Exit(1)
+		}
+		return
+	}
+
+	if cmd == "sessions" || cmd == "history" {
+		ns, err := parseSessionsArgs(rest)
+		usageFn := sessionsUsage
+		if cmd == "history" {
+			usageFn = historyUsage
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n\n%s\n", err, usageFn())
+			os.Exit(1)
+		}
 		if ns.Help {
-			fmt.Println(usage())
+			fmt.Println(usageFn())
 			return
 		}
 		if debug {
@@ -755,18 +1079,18 @@ func main() {
 	if cmd == "search" {
 		ns, err := parseSearchArgs(rest)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n\n%s\n", err, searchUsage())
 			os.Exit(1)
 		}
 		if ns.Help {
-			fmt.Println(usage())
+			fmt.Println(searchUsage())
 			return
 		}
 		if debug {
 			ns.Debug = true
 		}
 		if ns.Keyword == "" {
-			fmt.Fprintln(os.Stderr, "Missing <keyword>. Try: am search <keyword>")
+			fmt.Fprintf(os.Stderr, "Missing <keyword>.\n\n%s\n", searchUsage())
 			os.Exit(1)
 		}
 		searchCommand(ns)
@@ -792,6 +1116,10 @@ func main() {
 	if cmd == "remote" {
 		var token string
 		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--help" || rest[i] == "-h" {
+				fmt.Println(remoteUsage())
+				return
+			}
 			if rest[i] == "--telegram" {
 				if i+1 < len(rest) {
 					token = rest[i+1]
@@ -803,7 +1131,7 @@ func main() {
 			token = loadTokenFromEnvTest()
 		}
 		if token == "" {
-			fmt.Fprintln(os.Stderr, "Error: --telegram <token> is required for remote command or configure it in .env.test")
+			fmt.Fprintf(os.Stderr, "Error: --telegram <token> is required for remote command or configure it in .env.test\n\n%s\n", remoteUsage())
 			os.Exit(1)
 		}
 		remoteCommand(token)
