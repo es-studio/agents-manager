@@ -659,7 +659,7 @@ func remoteCommand(token string) {
 		os.Exit(0)
 	}()
 
-	fmt.Println("Starting am remote with Telegram integration...")
+	fmt.Println("Starting am remote (experimental) with Telegram integration...")
 	fmt.Println("Please send a message '/start codex', '/start agy' or '/start claude' to your telegram bot.")
 
 	tg := newTelegramClient(token)

@@ -22,7 +22,7 @@ Usage:
   am sessions [<dir>] [options]
   am history [<dir>] [options]
   am search <keyword> [<dir>] [options]
-  am remote --telegram <token>
+  am remote --telegram <token> (experimental)
   am launch codex [codex arguments...]
   am launch config
   am completion <shell>
@@ -56,8 +56,8 @@ Options (search):
   --debug             Print debug info to stderr
   -h, --help          Show help
 
-Options (remote):
-  --telegram <token>  Bridge codex / agy / claude over stdio through a Telegram bot
+Options (remote - experimental):
+  --telegram <token>  Bridge codex / agy / claude over stdio through a Telegram bot (experimental)
                       (pick the agent with /start_codex, /start_agy or /start_claude)
   -h, --help          Show help`
 
@@ -121,10 +121,13 @@ Options:
   -h, --help          Show help`
 
 const remoteUsageStr = `Usage:
-  am remote --telegram <token>
+  am remote --telegram <token> (experimental)
+
+Note:
+  This is an experimental feature under active development.
 
 Options:
-  --telegram <token>  Bridge codex / agy / claude over stdio through a Telegram bot
+  --telegram <token>  Bridge codex / agy / claude over stdio through a Telegram bot (experimental)
                       (pick the agent with /start_codex, /start_agy or /start_claude)
   -h, --help          Show help`
 
@@ -183,7 +186,7 @@ _am_search() {
 
 _am_remote() {
     _arguments -s -S \
-        '--telegram=[Bridge agents over stdio through Telegram bot]:bot token:' \
+        '--telegram=[Bridge agents over stdio through Telegram bot (experimental)]:bot token:' \
         '(-h --help)'{-h,--help}'[Show help]'
 }
 
@@ -197,7 +200,7 @@ _am() {
         'history:Query and browse local agent session history (alias for sessions)'
         'search:Search conversation transcripts and titles'
         'launch:Launch Codex with a custom tmux status line'
-        'remote:Bridge agents over stdio through Telegram'
+        'remote:Bridge agents over stdio through Telegram (experimental)'
         'completion:Generate shell completion script'
         'help:Show help for a command'
     )

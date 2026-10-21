@@ -1,6 +1,6 @@
 # agents-manager (`am`)
 
-[🇺🇸 English](README.md) | [🇰🇷 한국어](README.ko.md)
+[English](README.md) | [한국어](README.ko.md)
 
 `agents-manager` (CLI command: `am`) is a lightweight, Go-based CLI tool designed for macOS that aggregates, queries, and searches conversation session logs from various AI agents running on your system.
 
@@ -8,7 +8,7 @@ Built entirely with the Go standard library with zero external dependencies, it 
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 ### 1. Unified AI Agent Log Collection
 Scans the conversation history logs stored on disk by various agents to compile a comprehensive session list.
@@ -28,13 +28,13 @@ Scans the conversation history logs stored on disk by various agents to compile 
 * When querying session lists in a TTY environment, an interactive TUI mode is launched by default. It displays up to 10 sessions at the bottom of the screen.
 * You can navigate through sessions using the `↑/↓` (or `k/j`) keys, and press `Enter` to output the selected session ID to standard output (stdout).
 
-### 5. Telegram Remote Bridge (`am remote`)
+### 5. Telegram Remote Bridge (Experimental) (`am remote`)
 * Spawns `codex app-server --stdio` as a child process and acts as a bridge to exchange messages via the Telegram Bot API.
-* Currently, it only supports passing the Telegram token directly via a flag.
+* *Note: This is an experimental feature.*
 
 ---
 
-## 🛠 Installation & Build
+## Installation & Build
 
 ### Direct Installation via Go Toolchain
 If you have Go installed, you can instantly build and install the binary globally on your system using the following command:
@@ -52,7 +52,7 @@ go build -o am .
 
 ---
 
-## 📖 CLI Command Reference
+## CLI Command Reference
 
 ### Query Session History (`am sessions` / `am history`)
 ```bash
@@ -83,18 +83,29 @@ am launch codex resume --last
 am launch config
 ```
 
-Requires `tmux`, `lsof`, and a Codex CLI that supports `--no-daemon` (verified with 0.161.0). Every launch uses a separate tmux server and disables the configured Codex status-line items for that invocation. Exiting Codex closes that server, including any extra windows, without touching other tmux sessions. `Ctrl-b d` detaches without stopping Codex; the launcher prints the reattach command. Inside an existing tmux, send the prefix twice to reach the inner server. Mouse scrolling is enabled. Use `Ctrl-b [` to open tmux scrollback and `q` to return.
+Runs Codex in an isolated tmux session with a real-time bottom status line showing model, token usage, context remaining, and rate limits.
 
-The bottom line shows model (reasoning), directory, cumulative input/output tokens, remaining context, active turns (`tasks:0` or `tasks:1`), remaining 5-hour/7-day quotas with reset countdowns, and Codex version. Plan identifiers are omitted. Unavailable quota windows are hidden; other missing values are `--`. The model is cyan, directory purple, token counts blue-gray, and version gray. Remaining context/quota is green above 25%, yellow at 25% or less, and red at 10% or less; active tasks are yellow. Context uses the latest token count divided by the logged model context window, which can differ from Codex's own adjusted context percentage. Long lines are clipped to the terminal width.
+**Status line example (default)**:
+```text
+gpt-5-codex (High) · my-project · in:48.2k / out:6.1k · ctx:79.8% · tasks:1 · 5h:82% (2h 15m) · 7d:59% (3d 4h) · v0.161.0
+```
+* `gpt-5-codex (High)`: Model and reasoning effort
+* `my-project`: Working directory
+* `in:48.2k / out:6.1k`: Cumulative input and output tokens
+* `ctx:79.8%`: Remaining context window percentage
+* `tasks:1`: Active tasks (turns in progress)
+* `5h:82% (2h 15m)` / `7d:59% (3d 4h)`: 5-hour and 7-day quota remaining with reset countdowns
+* `v0.161.0`: Codex CLI version
 
-`am launch config` opens an interactive editor for the status line: `space` toggles an item, `shift+up/down` (or `K`/`J`) moves it, `r` restores the defaults, `enter` saves and `q` cancels. A live preview shows the resulting line. Beyond the defaults above, the optional items are: git branch (with `*` for uncommitted changes, refreshed every 5 seconds), context used / window, cached-input ratio, reasoning tokens, last-turn tokens, total tokens, turn count, turn time (running turn or last turn's duration), launch uptime, tool call count, last shell command, approval policy, sandbox policy (red for `danger-full-access`), collaboration mode, personality, service tier, short session id and current time. `f` toggles fast mode: when on, `am launch codex` adds `-c service_tier="fast"` before the forwarded arguments, so an explicit `-c service_tier=...` on the command line still wins; when off, nothing is added and the Codex config applies. The config is stored in `~/.config/am/launch.json` (or `$XDG_CONFIG_HOME/am/launch.json`) and is read when the next `am launch codex` starts; a running session keeps the layout it started with.
+* **Requirements**: `tmux`, `lsof`, and Codex CLI supporting `--no-daemon`.
+* **Navigation**: `Ctrl-b d` to detach without stopping Codex, `Ctrl-b [` for scrollback mode, mouse wheel scrolling supported.
+* **Configuration (`am launch config`)**: Interactive TUI to toggle and reorder status line items (tokens, quotas, git branch, etc.) and toggle fast mode (`f`).
 
-Status refreshes every second from rollout files opened by the launched Codex process tree, including resumed sessions. It does not select another session based on a shared working directory or latest global timestamp. The status line is installed before Codex starts. Version, effective model/reasoning settings and account quotas are fetched asynchronously through a short-lived, read-only Codex app-server (8-second timeout), without sending a prompt. CLI model/config/cwd overrides are respected. Tokens and context stay `--` until measured. For resume/fork, profiles, OSS or remote sessions, model/account bootstrap is skipped to avoid displaying settings from the wrong session; local rollout values still take precedence. Remote-server sessions without a local rollout cannot supply these fields.
-
-### Telegram Remote Bridge (`am remote`)
+### Telegram Remote Bridge (Experimental) (`am remote`)
 ```bash
 am remote --telegram <bot-token>
 ```
+*Note: This feature is experimental.*
 
 ### Global Options
 * `--provider P`: Filter results by a specific provider (e.g., `--provider claude --provider codex`).
@@ -104,5 +115,5 @@ am remote --telegram <bot-token>
 * `--json`: Output the results in JSON format (useful for script integrations).
 * `--debug`: Print debug logs during the scanning and parsing process.
 
-### `remote` Options
+### `remote` Options (Experimental)
 * `--telegram <token>`: Uses the Telegram Bot API token to bridge Telegram messages with the Codex app-server.

@@ -27,7 +27,9 @@ am sessions [--provider P]... [-n|--limit N] [-p|--period D] [--all] [--project 
 am history [<dir>] [options]
 am sessions <dir> [options]
 am search <keyword> [<dir>] [options]
-am remote --telegram <token>
+am launch codex [args...]
+am launch config
+am remote --telegram <token>  # experimental
 am completion <shell>
 ```
 
