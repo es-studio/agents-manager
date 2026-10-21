@@ -551,3 +551,43 @@ func TestTUIFilterItemsByTab(t *testing.T) {
 	}
 }
 
+func TestResolveCommand(t *testing.T) {
+	commands := []string{"sessions", "history", "search", "remote", "launch", "completion", "help"}
+
+	tests := []struct {
+		input       string
+		wantCmd     string
+		wantCandLen int
+		wantErr     bool
+	}{
+		{input: "launch", wantCmd: "launch"},
+		{input: "l", wantCmd: "launch"},
+		{input: "lch", wantCmd: "launch"},
+		{input: "LCH", wantCmd: "launch"},
+		{input: "ses", wantCmd: "sessions"},
+		{input: "sea", wantCmd: "search"},
+		{input: "hi", wantCmd: "history"},
+		{input: "rem", wantCmd: "remote"},
+		{input: "s", wantCmd: "", wantCandLen: 2, wantErr: true},
+		{input: "h", wantCmd: "", wantCandLen: 2, wantErr: true}, // history, help
+		{input: "xyz", wantCmd: "", wantCandLen: 0, wantErr: true},
+		{input: "", wantCmd: "", wantCandLen: 0, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		cmd, candidates, err := resolveCommand(tt.input, commands)
+		if tt.wantErr && err == nil {
+			t.Errorf("resolveCommand(%q) expected error, got nil", tt.input)
+		}
+		if !tt.wantErr && err != nil {
+			t.Errorf("resolveCommand(%q) unexpected error: %v", tt.input, err)
+		}
+		if cmd != tt.wantCmd {
+			t.Errorf("resolveCommand(%q) cmd = %q, want %q", tt.input, cmd, tt.wantCmd)
+		}
+		if len(candidates) != tt.wantCandLen {
+			t.Errorf("resolveCommand(%q) candidates len = %d, want %d", tt.input, len(candidates), tt.wantCandLen)
+		}
+	}
+}
+

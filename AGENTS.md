@@ -33,6 +33,8 @@ am remote --telegram <token>  # experimental
 am completion <shell>
 ```
 
+Commands support prefix and fuzzy (subsequence) matching (`am l codex`, `am lch codex` -> `am launch codex`, `am ses` -> `am sessions`, `am sea` -> `am search`). Ambiguous abbreviations list matching candidates.
+
 When cleaning up `am remote` tests, terminate only the `./am remote` process tree and its child `codex app-server --stdio` / MCP helper processes. Do not kill `/Applications/Codex.app/.../codex app-server --analytics-default-enabled`; that belongs to the desktop app.
 
 `am remote` renders agent output as formatted text in Telegram. Messages and drafts are converted from the CommonMark the agents emit to Telegram **HTML** (`parse_mode: "HTML"`) by `telegramMarkdownToHTML`: `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, ```` ```fences``` ````, `#` headings (rendered as bold) and `[text](url)` links. Code spans/blocks are stashed before conversion so their contents are never parsed as markdown, and `& < >` are HTML-escaped. Underscores are left alone (so `snake_case` survives) and unbalanced markers (common in streamed drafts) stay literal. If Telegram rejects a message (e.g. a malformed entity), the send is retried once as plain text so delivery is never blocked.

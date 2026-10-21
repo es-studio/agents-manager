@@ -54,6 +54,16 @@ go build -o am .
 
 ## CLI 명령어 명세
 
+> [!TIP]
+> **명령어 단축 및 퍼지(Fuzzy) 매칭**
+> 모든 명령어는 접두사(prefix) 및 부분 시퀀스(subsequence) 퍼지 매칭을 지원하므로 전체 명령어를 다 입력하지 않고도 빠르게 실행할 수 있습니다.
+> * `am l codex` 또는 `am lch codex` → `am launch codex`
+> * `am ses` → `am sessions`
+> * `am sea <키워드>` → `am search <키워드>`
+> * `am hi` → `am history`
+> * `am rem` → `am remote`
+> *(단, `am s`처럼 여러 명령어(`sessions`, `search`)와 일치하여 모호한 경우 후보 목록이 출력됩니다)*
+
 ### 세션 이력 조회 (`am sessions` / `am history`)
 ```bash
 # 전체 세션 최근 20개 조회 (am history는 am sessions의 별칭)

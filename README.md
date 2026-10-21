@@ -54,6 +54,16 @@ go build -o am .
 
 ## CLI Command Reference
 
+> [!TIP]
+> **Fast Command Aliasing & Fuzzy Matching**
+> All top-level commands support prefix and fuzzy (subsequence) matching, allowing you to run commands with short abbreviations:
+> * `am l codex` or `am lch codex` → `am launch codex`
+> * `am ses` → `am sessions`
+> * `am sea <keyword>` → `am search <keyword>`
+> * `am hi` → `am history`
+> * `am rem` → `am remote`
+> *(If an abbreviation is ambiguous, such as `am s` matching both `sessions` and `search`, the available candidates are listed.)*
+
 ### Query Session History (`am sessions` / `am history`)
 ```bash
 # Query the latest 20 sessions globally (am history is an alias for am sessions)

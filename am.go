@@ -27,6 +27,13 @@ Usage:
   am launch config
   am completion <shell>
 
+Tips:
+  Commands support prefix and fuzzy (subsequence) matching:
+    am l codex / am lch codex  -> am launch codex
+    am ses                     -> am sessions
+    am sea <keyword>           -> am search <keyword>
+    am hi                      -> am history
+
 Options (sessions / history):
   --provider <name>   Filter providers (repeatable). One of: codex, claude, cursor, antigravity
   -n, --limit <n>     Limit rows (default: 20). In <dir> mode this applies to merged results.
